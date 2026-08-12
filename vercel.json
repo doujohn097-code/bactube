@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/index" },
+    { "source": "/(.*)", "destination": "/index.html" }
+  ],
+  "functions": {
+    "api/index.js": {
+      "includeFiles": "api/gestion-67-firebase-adminsdk-fbsvc-9e3650bf9b.json"
+    }
+  }
+}
