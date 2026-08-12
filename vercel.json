@@ -6,7 +6,7 @@
   ],
   "functions": {
     "api/index.js": {
-      "includeFiles": "api/gestion-67-firebase-adminsdk-fbsvc-9e3650bf9b.json"
+      "includeFiles": ["api/.env"]
     }
   }
 }
