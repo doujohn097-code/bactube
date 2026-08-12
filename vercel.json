@@ -6,7 +6,7 @@
   ],
   "functions": {
     "api/index.js": {
-      "includeFiles": ["api/.env"]
+      "includeFiles": "api/.env"
     }
   }
 }
