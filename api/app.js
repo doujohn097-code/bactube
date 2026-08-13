@@ -106,6 +106,8 @@ async function createVideo(fields) {
     viewCount: fields.viewCount || 0,
     likes: fields.likes || 0,
     dislikes: fields.dislikes || 0,
+    likedBy: [],
+    dislikedBy: [],
     createdAt: fields.createdAt || new Date().toISOString(),
   };
   await putObjectJson(`${METADATA_PREFIX}/${id}.json`, video);
@@ -149,6 +151,7 @@ async function addComment(videoId, user, text) {
     authorPhoto: user.photoUrl || '',
     text: text.trim(),
     likes: 0,
+    likedBy: [],
     createdAt: new Date().toISOString(),
     replies: [],
   };
@@ -168,6 +171,7 @@ async function addReply(videoId, commentId, user, text) {
     authorPhoto: user.photoUrl || '',
     text: text.trim(),
     likes: 0,
+    likedBy: [],
     createdAt: new Date().toISOString(),
   };
   parent.replies = parent.replies || [];
@@ -176,24 +180,105 @@ async function addReply(videoId, commentId, user, text) {
   return reply;
 }
 
-async function likeComment(videoId, commentId) {
+function removeUid(list, uid) {
+  return (list || []).filter((id) => id !== uid);
+}
+
+function toggleUid(list, uid) {
+  const arr = list || [];
+  return arr.includes(uid) ? removeUid(arr, uid) : [...arr, uid];
+}
+
+function includesUid(list, uid) {
+  return (list || []).includes(uid);
+}
+
+async function toggleVideoLike(videoId, uid) {
+  const video = await getVideo(videoId);
+  if (!video) throw new Error('Video not found');
+  video.likedBy = video.likedBy || [];
+  video.dislikedBy = video.dislikedBy || [];
+  let likes = video.likes || 0;
+  let dislikes = video.dislikes || 0;
+
+  if (includesUid(video.likedBy, uid)) {
+    video.likedBy = removeUid(video.likedBy, uid);
+    likes = Math.max(0, likes - 1);
+  } else {
+    video.likedBy = [...video.likedBy, uid];
+    likes += 1;
+    if (includesUid(video.dislikedBy, uid)) {
+      video.dislikedBy = removeUid(video.dislikedBy, uid);
+      dislikes = Math.max(0, dislikes - 1);
+    }
+  }
+  video.likes = likes;
+  video.dislikes = dislikes;
+  await putObjectJson(`${METADATA_PREFIX}/${videoId}.json`, video);
+  await updateIndex(video);
+  return {
+    likes: video.likes,
+    dislikes: video.dislikes,
+    likedBy: video.likedBy,
+    dislikedBy: video.dislikedBy,
+  };
+}
+
+async function toggleVideoDislike(videoId, uid) {
+  const video = await getVideo(videoId);
+  if (!video) throw new Error('Video not found');
+  video.likedBy = video.likedBy || [];
+  video.dislikedBy = video.dislikedBy || [];
+  let likes = video.likes || 0;
+  let dislikes = video.dislikes || 0;
+
+  if (includesUid(video.dislikedBy, uid)) {
+    video.dislikedBy = removeUid(video.dislikedBy, uid);
+    dislikes = Math.max(0, dislikes - 1);
+  } else {
+    video.dislikedBy = [...video.dislikedBy, uid];
+    dislikes += 1;
+    if (includesUid(video.likedBy, uid)) {
+      video.likedBy = removeUid(video.likedBy, uid);
+      likes = Math.max(0, likes - 1);
+    }
+  }
+  video.likes = likes;
+  video.dislikes = dislikes;
+  await putObjectJson(`${METADATA_PREFIX}/${videoId}.json`, video);
+  await updateIndex(video);
+  return {
+    likes: video.likes,
+    dislikes: video.dislikes,
+    likedBy: video.likedBy,
+    dislikedBy: video.dislikedBy,
+  };
+}
+
+async function toggleCommentLike(videoId, commentId, uid) {
   const comments = await getComments(videoId);
   const comment = comments.find((c) => c.id === commentId);
   if (!comment) throw new Error('Comment not found');
-  comment.likes = (comment.likes || 0) + 1;
+  const was = includesUid(comment.likedBy, uid);
+  comment.likedBy = toggleUid(comment.likedBy, uid);
+  comment.likes = (comment.likes || 0) + (was ? -1 : 1);
+  if (comment.likes < 0) comment.likes = 0;
   await putComments(videoId, comments);
-  return comment.likes;
+  return { likes: comment.likes, likedBy: comment.likedBy };
 }
 
-async function likeReply(videoId, commentId, replyId) {
+async function toggleReplyLike(videoId, commentId, replyId, uid) {
   const comments = await getComments(videoId);
   const comment = comments.find((c) => c.id === commentId);
   if (!comment || !comment.replies) throw new Error('Comment not found');
   const reply = comment.replies.find((r) => r.id === replyId);
   if (!reply) throw new Error('Reply not found');
-  reply.likes = (reply.likes || 0) + 1;
+  const was = includesUid(reply.likedBy, uid);
+  reply.likedBy = toggleUid(reply.likedBy, uid);
+  reply.likes = (reply.likes || 0) + (was ? -1 : 1);
+  if (reply.likes < 0) reply.likes = 0;
   await putComments(videoId, comments);
-  return reply.likes;
+  return { likes: reply.likes, likedBy: reply.likedBy };
 }
 
 // --- Express App ---
@@ -293,10 +378,8 @@ api.post('/videos/:id/view', async (req, res) => {
 
 api.post('/videos/:id/like', requireAuth, async (req, res) => {
   try {
-    const video = await getVideo(req.params.id);
-    if (!video) return res.status(404).json({ error: 'Video not found' });
-    await updateVideo(req.params.id, { likes: (video.likes || 0) + 1 });
-    res.json({ ok: true });
+    const result = await toggleVideoLike(req.params.id, req.user.uid);
+    res.json({ ok: true, ...result, likedByCurrentUser: includesUid(result.likedBy, req.user.uid), dislikedByCurrentUser: includesUid(result.dislikedBy, req.user.uid) });
   } catch (err) {
     console.error('like error', err.message);
     res.status(500).json({ error: 'Failed to update like' });
@@ -305,10 +388,8 @@ api.post('/videos/:id/like', requireAuth, async (req, res) => {
 
 api.post('/videos/:id/dislike', requireAuth, async (req, res) => {
   try {
-    const video = await getVideo(req.params.id);
-    if (!video) return res.status(404).json({ error: 'Video not found' });
-    await updateVideo(req.params.id, { dislikes: (video.dislikes || 0) + 1 });
-    res.json({ ok: true });
+    const result = await toggleVideoDislike(req.params.id, req.user.uid);
+    res.json({ ok: true, ...result, likedByCurrentUser: includesUid(result.likedBy, req.user.uid), dislikedByCurrentUser: includesUid(result.dislikedBy, req.user.uid) });
   } catch (err) {
     console.error('dislike error', err.message);
     res.status(500).json({ error: 'Failed to update dislike' });
@@ -345,8 +426,8 @@ api.post('/videos/:id/comments', requireAuth, async (req, res) => {
 
 api.post('/videos/:id/comments/:commentId/like', requireAuth, async (req, res) => {
   try {
-    const likes = await likeComment(req.params.id, req.params.commentId);
-    res.json({ ok: true, likes });
+    const result = await toggleCommentLike(req.params.id, req.params.commentId, req.user.uid);
+    res.json({ ok: true, ...result, likedByCurrentUser: includesUid(result.likedBy, req.user.uid) });
   } catch (err) {
     console.error('comment like error', err.message);
     res.status(500).json({ error: 'Failed to like comment' });
@@ -355,8 +436,8 @@ api.post('/videos/:id/comments/:commentId/like', requireAuth, async (req, res) =
 
 api.post('/videos/:id/comments/:commentId/replies/:replyId/like', requireAuth, async (req, res) => {
   try {
-    const likes = await likeReply(req.params.id, req.params.commentId, req.params.replyId);
-    res.json({ ok: true, likes });
+    const result = await toggleReplyLike(req.params.id, req.params.commentId, req.params.replyId, req.user.uid);
+    res.json({ ok: true, ...result, likedByCurrentUser: includesUid(result.likedBy, req.user.uid) });
   } catch (err) {
     console.error('reply like error', err.message);
     res.status(500).json({ error: 'Failed to like reply' });
