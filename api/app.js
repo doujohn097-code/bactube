@@ -126,6 +126,76 @@ async function updateVideo(id, updates) {
   return video;
 }
 
+// --- Comments (stored in R2) ---
+function commentsKey(videoId) {
+  return `${METADATA_PREFIX}/comments/${videoId}.json`;
+}
+
+async function getComments(videoId) {
+  return (await getObjectJson(commentsKey(videoId))) || [];
+}
+
+async function putComments(videoId, comments) {
+  await putObjectJson(commentsKey(videoId), comments);
+}
+
+async function addComment(videoId, user, text) {
+  const comments = await getComments(videoId);
+  const comment = {
+    id: uuidv4(),
+    videoId,
+    authorUid: user.uid,
+    authorName: user.displayName || user.email || 'مستخدم',
+    authorPhoto: user.photoUrl || '',
+    text: text.trim(),
+    likes: 0,
+    createdAt: new Date().toISOString(),
+    replies: [],
+  };
+  comments.unshift(comment);
+  await putComments(videoId, comments);
+  return comment;
+}
+
+async function addReply(videoId, commentId, user, text) {
+  const comments = await getComments(videoId);
+  const parent = comments.find((c) => c.id === commentId);
+  if (!parent) throw new Error('Comment not found');
+  const reply = {
+    id: uuidv4(),
+    authorUid: user.uid,
+    authorName: user.displayName || user.email || 'مستخدم',
+    authorPhoto: user.photoUrl || '',
+    text: text.trim(),
+    likes: 0,
+    createdAt: new Date().toISOString(),
+  };
+  parent.replies = parent.replies || [];
+  parent.replies.push(reply);
+  await putComments(videoId, comments);
+  return reply;
+}
+
+async function likeComment(videoId, commentId) {
+  const comments = await getComments(videoId);
+  const comment = comments.find((c) => c.id === commentId);
+  if (!comment) throw new Error('Comment not found');
+  comment.likes = (comment.likes || 0) + 1;
+  await putComments(videoId, comments);
+  return comment.likes;
+}
+
+async function likeReply(videoId, commentId, replyId) {
+  const comments = await getComments(videoId);
+  const comment = comments.find((c) => c.id === commentId);
+  if (!comment || !comment.replies) throw new Error('Comment not found');
+  const reply = comment.replies.find((r) => r.id === replyId);
+  if (!reply) throw new Error('Reply not found');
+  reply.likes = (reply.likes || 0) + 1;
+  await putComments(videoId, comments);
+  return reply.likes;
+}
+
 // --- Express App ---
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -242,6 +312,54 @@ api.post('/videos/:id/dislike', requireAuth, async (req, res) => {
   } catch (err) {
     console.error('dislike error', err.message);
     res.status(500).json({ error: 'Failed to update dislike' });
+  }
+});
+
+api.get('/videos/:id/comments', async (req, res) => {
+  try {
+    const comments = await getComments(req.params.id);
+    res.json({ comments });
+  } catch (err) {
+    console.error('comments list error', err.message);
+    res.status(500).json({ error: 'Failed to load comments' });
+  }
+});
+
+api.post('/videos/:id/comments', requireAuth, async (req, res) => {
+  try {
+    const { text, replyTo } = req.body;
+    if (!text || !text.trim()) {
+      return res.status(400).json({ error: 'Comment text is required' });
+    }
+    if (replyTo) {
+      const reply = await addReply(req.params.id, replyTo, req.user, text);
+      return res.json({ reply });
+    }
+    const comment = await addComment(req.params.id, req.user, text);
+    res.json({ comment });
+  } catch (err) {
+    console.error('comment create error', err.message);
+    res.status(500).json({ error: 'Failed to add comment' });
+  }
+});
+
+api.post('/videos/:id/comments/:commentId/like', requireAuth, async (req, res) => {
+  try {
+    const likes = await likeComment(req.params.id, req.params.commentId);
+    res.json({ ok: true, likes });
+  } catch (err) {
+    console.error('comment like error', err.message);
+    res.status(500).json({ error: 'Failed to like comment' });
+  }
+});
+
+api.post('/videos/:id/comments/:commentId/replies/:replyId/like', requireAuth, async (req, res) => {
+  try {
+    const likes = await likeReply(req.params.id, req.params.commentId, req.params.replyId);
+    res.json({ ok: true, likes });
+  } catch (err) {
+    console.error('reply like error', err.message);
+    res.status(500).json({ error: 'Failed to like reply' });
   }
 });
 
